@@ -22,7 +22,10 @@ done
 
 shell="$1"
 if [ -z "$shell" ]; then
-  shell="$(basename "$SHELL")"
+  shell="$(ps c -p "$PPID" -o 'ucomm=' 2>/dev/null || true)"
+  shell="${shell##-}"
+  shell="${shell%% *}"
+  shell="$(basename "${shell:-$SHELL}")"
 fi
 
 READLINK=$(type -p greadlink readlink | head -1)
@@ -62,6 +65,9 @@ if [ -z "$print" ]; then
   ksh )
     profile='~/.profile'
     ;;
+  fish )
+    profile='~/.config/fish/config.fish'
+    ;;
   * )
     profile='your profile'
     ;;
@@ -70,7 +76,14 @@ if [ -z "$print" ]; then
   { echo "# Load ndenv automatically by adding"
     echo "# the following to ${profile}:"
     echo
-    echo 'eval "$(ndenv init -)"'
+    case "$shell" in
+    fish )
+      echo 'status --is-interactive; and . (ndenv init -|psub)'
+      ;;
+    * )
+      echo 'eval "$(ndenv init -)"'
+      ;;
+    esac
     echo
   } >&2
 
@@ -80,24 +93,72 @@ fi
 mkdir -p "${NDENV_ROOT}/"{shims,versions}
 
 if [[ ":${PATH}:" != *:"${NDENV_ROOT}/shims":* ]]; then
-  echo 'export PATH="'${NDENV_ROOT}'/shims:${PATH}"'
+  case "$shell" in
+  fish )
+    echo "setenv PATH '${NDENV_ROOT}/shims' \$PATH"
+  ;;
+  * )
+    echo 'export PATH="'${NDENV_ROOT}'/shims:${PATH}"'
+  ;;
+  esac
 fi
 
 case "$shell" in
-bash | zsh )
-  echo "source \"$root/completions/ndenv.${shell}\""
-  ;;
+fish )
+  echo "setenv NDENV_SHELL $shell"
+;;
+* )
+  echo "export NDENV_SHELL=$shell"
+;;
 esac
+
+completion="${root}/completions/ndenv.${shell}"
+if [ -r "$completion" ]; then
+  case "$shell" in
+  fish ) echo ". '$completion'" ;;
+  *    ) echo "source '$completion'" ;;
+  esac
+fi
 
 if [ -z "$no_rehash" ]; then
   echo 'ndenv rehash 2>/dev/null'
 fi
 
 commands=(`ndenv-commands --sh`)
+case "$shell" in
+fish )
+  cat <<EOS
+function ndenv
+  set command \$argv[1]
+  set -e argv[1]
+
+  switch "\$command"
+  case ${commands[*]}
+    eval (ndenv "sh-\$command" \$argv)
+  case '*'
+    command ndenv "\$command" \$argv
+  end
+end
+EOS
+  ;;
+ksh )
+  cat <<EOS
+function ndenv {
+  typeset command
+EOS
+  ;;
+* )
+  cat <<EOS
+ndenv() {
+  local command
+EOS
+  ;;
+esac
+
+
+if [ "$shell" != "fish" ]; then
 IFS="|"
 cat <<EOS
-ndenv() {
-  typeset command
   command="\$1"
   if [ "\$#" -gt 0 ]; then
     shift
@@ -111,3 +172,4 @@ ndenv() {
   esac
 }
 EOS
+fi
